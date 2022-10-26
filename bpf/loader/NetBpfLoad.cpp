@@ -1580,6 +1580,7 @@ static int doLoad(char** argv, char * const envp[]) {
     const bool runningAsRoot = !getuid();  // true iff U QPR3 or V+
 
     const int first_api_level = GetIntProperty("ro.board.first_api_level", api_level_full / 100);
+    bool failed = false;
 
     // last in U QPR2 beta1
     const bool has_platform_bpfloader_rc = exists("/system/etc/init/bpfloader.rc");
@@ -1608,27 +1609,27 @@ static int doLoad(char** argv, char * const envp[]) {
     // (this also guarantees 'kernelVer' isn't an invalid uninitialized 0)
     if (!isAtLeastKernelVersion(4, 9)) {
         ALOGE("Android S & T require kernel 4.9.");
-        return 3;
+        failed = true;
     }
 
     // U bumps the kernel requirement up to 4.14
     if (isAtLeastU && !isAtLeastKernelVersion(4, 14)) {
         ALOGE("Android U requires kernel 4.14.");
-        return 4;
+        failed = true;
     }
 
     // V bumps the kernel requirement up to 4.19
     // see also: //system/netd/tests/kernel_test.cpp TestKernel419
     if (isAtLeastV && !isAtLeastKernelVersion(4, 19)) {
         ALOGE("Android V requires kernel 4.19.");
-        return 5;
+        failed = true;
     }
 
     // 25Q2 bumps the kernel requirement up to 5.4
     // see also: //system/netd/tests/kernel_test.cpp TestKernel54
     if (isAtLeast25Q2 && !isAtLeastKernelVersion(5, 4)) {
         ALOGE("Android 25Q2 requires kernel 5.4.");
-        return 6;
+        failed = true;
     }
 
     // 25Q4 bumps the kernel requirement up to 5.10
@@ -1641,24 +1642,24 @@ static int doLoad(char** argv, char * const envp[]) {
     // see also: //system/netd/tests/kernel_test.cpp TestKernel64Bit
     if (isAtLeastV && isKernel32Bit() && isAtLeastKernelVersion(5, 16)) {
         ALOGE("Android V+ platform with 32 bit kernel version >= 5.16.0 is unsupported");
-        if (!isTV()) return 8;
+        failed = true;
     }
 
     if (isKernel32Bit() && isAtLeast25Q2) {
         ALOGE("Android 25Q2 requires 64 bit kernel.");
-        return 9;
+        failed = true;
     }
 
     // 6.6 is highest version supported by Android V, so this is effectively W+ (sdk=36+)
     if (isKernel32Bit() && isAtLeastKernelVersion(6, 7)) {
         ALOGE("Android platform with 32 bit kernel version >= 6.7.0 is unsupported");
-        return 10;
+        failed = true;
     }
 
     // Various known ABI layout issues, particularly wrt. bpf and ipsec/xfrm.
     if (isAtLeastV && isKernel32Bit() && isX86()) {
         ALOGE("Android V requires X86 kernel to be 64-bit.");
-        if (!isTV()) return 11;
+        failed = true;
     }
 
     if (isAtLeastV) {
@@ -1726,10 +1727,10 @@ static int doLoad(char** argv, char * const envp[]) {
             ALOGW("[Arm KernelUpRev] 32-bit userspace unsupported on 6.2+ kernels.");
         } else if (isArm()) {
             ALOGE("[Arm] 64-bit userspace required on 6.2+ kernels (%d).", first_api_level);
-            return 12;
+            failed = true;
         } else { // x86 since RiscV cannot be 32-bit
             ALOGE("[x86] 64-bit userspace required on 6.2+ kernels.");
-            return 13;
+            failed = true;
         }
     }
 
@@ -1743,14 +1744,14 @@ static int doLoad(char** argv, char * const envp[]) {
     if (isUserspace32bit() && isAtLeastKernelVersion(6, 13)) {
         // due to previous check only reachable on Arm && (<=T kernel uprev || TV || Wear)
         ALOGE("64-bit userspace required on 6.13+ kernels.");
-        return 14;
+        failed = true;
     }
 
     if (isAtLeast25Q2) {
         FILE * f = fopen("/system/etc/init/netbpfload.rc", "re");
         if (!f) {
             ALOGE("failure opening /system/etc/init/netbpfload.rc");
-            return 15;
+            failed = true;
         }
         int y = -1, q = -1, a = -1, b = -1, c = -1;
         int v = fscanf(f, "# %d %d %d %d %d #", &y, &q, &a, &b, &c);
@@ -1768,7 +1769,7 @@ static int doLoad(char** argv, char * const envp[]) {
     if (!isEng() && !isUser() && !isUserdebug()) {
         ALOGE("Failed to determine the build type: got %s, want 'eng', 'user', or 'userdebug'",
               getBuildType().c_str());
-        return 22;
+        failed = true;
     }
 
     if (runningAsRoot) {
@@ -1778,8 +1779,9 @@ static int doLoad(char** argv, char * const envp[]) {
         // but we need 0 (enabled)
         // (this writeFile is known to fail on at least 4.19, but always defaults to 0 on
         // pre-5.13, on 5.13+ it depends on CONFIG_BPF_UNPRIV_DEFAULT_OFF)
-        if (!writeFile("/proc/sys/kernel/unprivileged_bpf_disabled", "0\n") &&
-            isAtLeastKernelVersion(5, 13)) return 23;
+        if (!writeFile("/proc/sys/kernel/unprivileged_bpf_disabled", "0\n")) {
+                failed = true;
+        }
     }
 
     if (isAtLeastU) {
@@ -1794,29 +1796,29 @@ static int doLoad(char** argv, char * const envp[]) {
         //  kernel does not have CONFIG_BPF_JIT=y)
         // BPF_JIT is required by R VINTF (which means 4.14/4.19/5.4 kernels),
         // but 4.14/4.19 were released with P & Q, and only 5.4 is new in R+.
-        if (!writeFile("/proc/sys/net/core/bpf_jit_enable", "1\n")) return 24;
+        if (!writeFile("/proc/sys/net/core/bpf_jit_enable", "1\n")) failed = true;
 
         // Enable JIT kallsyms export for privileged users only
         // (Note: this (open) will fail with ENOENT 'No such file or directory' if
         //  kernel does not have CONFIG_HAVE_EBPF_JIT=y)
-        if (!writeFile("/proc/sys/net/core/bpf_jit_kallsyms", "1\n")) return 25;
+        if (!writeFile("/proc/sys/net/core/bpf_jit_kallsyms", "1\n")) failed = true;
     }
 
     // Create all the pin subdirectories
     // (this must be done first to allow create_location and pin_subdir functionality,
     //  which could otherwise fail with ENOENT during object pinning or renaming,
     //  due to ordering issues)
-    if (!createDir("/sys/fs/bpf/tethering")) return 26;
+    if (!createDir("/sys/fs/bpf/tethering")) failed = true;
     // This is technically T+ but S also needs it for the 'mainline_done' file.
-    if (!createDir("/sys/fs/bpf/netd_shared")) return 27;
+    if (!createDir("/sys/fs/bpf/netd_shared")) failed = true;
 
     if (isAtLeastT) {
-        if (!createDir("/sys/fs/bpf/netd_readonly")) return 28;
-        if (!createDir("/sys/fs/bpf/net_shared")) return 29;
-        if (!createDir("/sys/fs/bpf/net_private")) return 30;
+        if (!createDir("/sys/fs/bpf/netd_readonly")) failed = true;
+        if (!createDir("/sys/fs/bpf/net_shared")) failed = true;
+        if (!createDir("/sys/fs/bpf/net_private")) failed = true;
 
         // This one is primarily meant for triggering genfscon rules.
-        if (!createDir("/sys/fs/bpf/loader")) return 31;
+        if (!createDir("/sys/fs/bpf/loader")) failed = true;
     }
 
     if (runningAsRoot) {  // implies U QPR3+ and kernel 4.14+
@@ -1825,13 +1827,13 @@ static int doLoad(char** argv, char * const envp[]) {
         uint32_t progId = bpfGetNextProgId(0);  // expect 0 with errno == ENOENT
         if (progId || errno != ENOENT) {
             ALOGE("bpfGetNextProgId(zero) returned %u (errno %d)", progId, errno);
-            return 32;
+            failed = true;
         }
         errno = 0;
         uint32_t mapId = bpfGetNextMapId(0);  // expect 0 with errno == ENOENT
         if (mapId || errno != ENOENT) {
             ALOGE("bpfGetNextMapId(zero) returned %u (errno %d)", mapId, errno);
-            return 33;
+            failed = true;
         }
     } else if (isAtLeastKernelVersion(4, 14)) {  // implies S through U QPR2
         // bpfGetNext{Prog,Map}Id require 4.14+
@@ -1844,7 +1846,7 @@ static int doLoad(char** argv, char * const envp[]) {
             if (!next && errno == ENOENT) break;
             if (next <= mapId) {
                 ALOGE("bpfGetNextMapId(%u) returned %u errno %d", mapId, next, errno);
-                return 34;
+                failed = true;
             }
             mapId = next;
         }
@@ -1857,27 +1859,26 @@ static int doLoad(char** argv, char * const envp[]) {
             // which causes bpfGetNextMapId to behave as bpfGetNextProgId,
             // and thus it should return 0 with errno == ENOENT.
             ALOGE("bpfGetNextMapId(final %d) returned %d errno %d", mapId, next, errno);
-            if (next || errno != ENOENT) return 35;
-            if (isAtLeastT || isAtLeastKernelVersion(4, 20)) return 36;
+            if (next || errno != ENOENT) failed = true;
+            if (isAtLeastT || isAtLeastKernelVersion(4, 20)) failed = true;
             // implies Android S with 4.14 or 4.19 kernel
             ALOGW("Detected kernel with invalid BPF UAPI - disabling mainline use of eBPF.");
             // leave a flag that we're 'done'
-            if (!createDir("/sys/fs/bpf/netd_shared/mainline_done")) return 37;
-            return 0;
+            if (!createDir("/sys/fs/bpf/netd_shared/mainline_done")) failed = true;
+            failed = true;
         }
     } else {  // implies S/T with 4.9 kernel
         // nothing we can do.
     }
 
     // Load all ELF objects, create programs and maps, and pin them
-    if (!loadAllObjects()) {
+    if (!loadAllObjects() || failed) {
         ALOGE("=== CRITICAL FAILURE LOADING BPF PROGRAMS ===");
         ALOGE("If this triggers reliably, you're probably missing kernel options or patches.");
         ALOGE("If this triggers randomly, you might be hitting some memory allocation "
               "problems or startup script race.");
         ALOGE("--- DO NOT EXPECT SYSTEM TO BOOT SUCCESSFULLY ---");
-        sleep(20);
-        return 38;
+        failed = true;
     }
 
     {
@@ -1888,33 +1889,33 @@ static int doLoad(char** argv, char * const envp[]) {
         int value = 123;
         if (writeToMapEntry(map, &one, &value, BPF_ANY)) {
             ALOGE("Critical kernel bug - failure to write into index 1 of 2 element bpf map array.");
-            if (isAtLeastT) return 39;
+            if (isAtLeastT) failed = true;
         }
 
         const char* const kernel_bugs_map_path = "/sys/fs/bpf/tethering/map_kernel_bugs";
         int ret = bpfFdPin(map, kernel_bugs_map_path);
         if (ret) {
             ALOGE("pin -> %d [%d:%s]", ret, errno, strerror(errno));
-            return 40;
+            failed = true;
         }
 
         ret = chmod(kernel_bugs_map_path, 0440);
         if (ret) {
             ALOGE("chmod %s 0440 -> %d [%d:%s]", kernel_bugs_map_path,
                   ret, errno, strerror(errno));
-            return 41;
+            failed = true;
         }
 
         ret = chown(kernel_bugs_map_path, AID_ROOT, AID_NETWORK_STACK);
         if (ret) {
             ALOGE("chown %s %d %d -> %d [%d:%s]", kernel_bugs_map_path, AID_ROOT,
                   AID_NETWORK_STACK, ret, errno, strerror(errno));
-            return 42;
+            failed = true;
         }
     }
 
     // leave a flag that we're done
-    if (!createDir("/sys/fs/bpf/netd_shared/mainline_done")) return 43;
+    if (!createDir("/sys/fs/bpf/netd_shared/mainline_done")) failed = true;
 
     // platform bpfloader will only succeed when run as root
     if (!runningAsRoot) {
