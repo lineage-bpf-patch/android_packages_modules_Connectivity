@@ -915,6 +915,7 @@ public class BpfNetMaps {
             final InetAddress address, final int protocol, final int remotePort,
             final boolean isAllowed) {
         throwIfPre25Q2("addLocalNetAccess is not available on pre-B devices");
+        if (sLocalNetAccessMap == null) return;
         if (iface == null) {
             Log.e(TAG, "Null iface, skip addLocalNetAccess for " + address);
             return;
@@ -952,6 +953,7 @@ public class BpfNetMaps {
     public void removeLocalNetAccess(final int lpmBitlen, @Nullable final String iface,
             final InetAddress address, final int protocol, final int remotePort) {
         throwIfPre25Q2("removeLocalNetAccess is not available on pre-B devices");
+        if (sLocalNetAccessMap == null) return;
         final int ifIndex;
         if (iface == null) {
             ifIndex = 0;
@@ -1067,7 +1069,7 @@ public class BpfNetMaps {
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public int getNetPermForUid(final int uid) {
         final int appId = UserHandle.getAppId(uid);
-        if (sUidPermissionMap == null) return PERMISSION_INTERNET;
+        if (sUidPermissionMap == null) return TRAFFIC_PERMISSION_INTERNET;
         try {
             // Key of uid permission map is appId
             // TODO: Rename map name
